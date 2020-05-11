@@ -60,9 +60,9 @@ def bootstrap_PF(data, theta, potential, propagate, test_fn, N, store_paths=Fals
         particles[:,0] = propagate(particles[:,0], theta)
     for t in trange(T) :
         if store_paths :
-            weights = potential(particles[:,t], data['y'][t], theta)
+            weights = potential(data['y'][t], particles[:,t], theta)
         else : 
-            weights = potential(particles, data['y'][t], theta)
+            weights = potential(data['y'][t], particles, theta)
         log_NC_increment = np.log(np.mean(weights))
         log_NC[t+1] = log_NC[t] + log_NC_increment
         resampled_idx = npr.choice(a=N, size=N, replace=True, p=weights/np.sum(weights))
@@ -102,7 +102,7 @@ def alphaSMC_random(data, theta, potential, propagate, test_fn, N, C) :
     return log_NC, test_fn_est
 
 
-def vectorized(prob_matrix, items):
+def vectorized(prob_matrix, items) :
     s = prob_matrix.cumsum(axis=0)
     r = npr.rand(prob_matrix.shape[1])
     k = (s < r).sum(axis=0)
@@ -171,13 +171,14 @@ def connectivity_const(alpha) :
 
 def within_island_resample(particles, theta, potential, y, A) :
     N = np.shape(particles)[0]
+    items = np.arange(N)
+    resampled_idxs = np.ones(N).astype(int)
     pots = potential(y, particles, theta)
-    W_out = np.zeros(N)
-    for i in range(N) :
-        weights = A[i]*pots
-        W_out[i] = np.sum(weights)
-        particles[i] = particles[npr.choice(a=N, size=1, p=weights/W_out[i])]
-    return particles, W_out
+    weights = A*pots
+    W_out = np.sum(weights,1)
+    prob_matrix = ((weights.T)/W_out)
+    resampled_idxs = vectorized(prob_matrix, items)
+    return particles[resampled_idxs], W_out
 
 def augmented_island_resampling(particles, theta, W_out, A) :
     N = np.shape(particles)[0]
@@ -187,10 +188,10 @@ def augmented_island_resampling(particles, theta, W_out, A) :
     for s in range(S) :
         V_old = copy.deepcopy(V)
         resampled_idx = copy.deepcopy(idx)
-        for i in range(N) :
-            weights = A[s,i]*V_old
-            V[i] = np.sum(weights)
-            idx[i] = npr.choice(a=resampled_idx, size=1, p=weights/np.sum(weights))
+        weights = A[s]*V_old
+        V = np.sum(weights,1)
+        prob_matrix = ((weights.T)/V)
+        idx = vectorized(prob_matrix, resampled_idx)
     return particles[idx]
 
 def AIRPF(data, theta, potential, propagate, test_fn, A, store_paths=False) :
