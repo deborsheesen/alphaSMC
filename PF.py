@@ -2,6 +2,11 @@
 from __future__ import division
 get_ipython().magic('matplotlib inline')
 import numpy as np, numpy.random as npr, scipy, copy, networkx as nx
+from tqdm import trange
+
+################################################################################################################
+############################################### INITIALISE STUFF ###############################################
+################################################################################################################
 
 def initialise(data, theta, propagate, N) :
     
@@ -23,32 +28,67 @@ def initialise(data, theta, propagate, N) :
     return particles, weights, log_NC, test_fn_est, W, resampled_idx
 
 
-# Bootstrap particle filter:
+################################################################################################################
+########################################## BOOTSTRAP PARTICLE FILTER ###########################################
+################################################################################################################
 
-def bootstrap_PF(data, theta, potential, propagate, test_fn, N) :
+# def bootstrap_PF(data, theta, potential, propagate, test_fn, N) :
+#    
+#     y = data['y']
+#     particles, _, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
+#     T = np.shape(y)[0]
+#    
+#     for t in trange(T) :
+#         #log_weights = log_potential(particles, y[t], theta)
+#         #weights = np.exp(log_weights-min(log_weights))
+#         #log_NC_increment = np.log(np.mean(np.log(weights)) + min(log_weights))
+#         weights = potential(particles, y[t], theta)/N
+#         log_NC_increment = np.log(np.sum(weights))
+#         log_NC[t+1] = log_NC[t] + log_NC_increment
+#         particles = particles[npr.choice(a=N, size=N, replace=True, p=weights/np.sum(weights))]
+#         particles = propagate(particles, theta)
+#         test_fn_est[t] = np.mean(test_fn(particles))
+#     return log_NC, test_fn_est
+
+def bootstrap_PF(data, theta, potential, propagate, test_fn, N, store_paths=False) :
     
-    y = data['y']
     particles, _, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
-    T = np.shape(y)[0]
-    
-    for t in range(T) :
-        weights = potential(particles, y[t], theta)/N
-        log_NC[t+1] = log_NC[t] + np.log(np.sum(weights))
-        particles = particles[npr.choice(a=N,size=N,replace=True,p=weights/np.sum(weights))]
-        particles = propagate(particles, theta)
-        test_fn_est[t] = np.mean(test_fn(particles))
-    return log_NC, test_fn_est
+    T = np.shape(data['y'])[0]
+    if store_paths :
+        particles = np.zeros((N,T+1,len(data['x_0'])))
+        particles[:,0] = data['x_0']
+        particles[:,0] = propagate(particles[:,0], theta)
+    for t in trange(T) :
+        if store_paths :
+            weights = potential(particles[:,t], data['y'][t], theta)
+        else : 
+            weights = potential(particles, data['y'][t], theta)
+        log_NC_increment = np.log(np.mean(weights))
+        log_NC[t+1] = log_NC[t] + log_NC_increment
+        resampled_idx = npr.choice(a=N, size=N, replace=True, p=weights/np.sum(weights))
+        if store_paths : 
+            particles[:,t] = particles[resampled_idx,t]
+            particles[:,t+1] = propagate(particles[:,t], theta)
+            test_fn_est[t] = np.mean(test_fn(particles[:,t+1]))
+        else : 
+            particles[:] = particles[resampled_idx]
+            particles[:] = propagate(particles, theta)
+            test_fn_est[t] = np.mean(test_fn(particles))
+    return log_NC, test_fn_est, particles
 
+
+################################################################################################################
+######################################### ALPHA SEQUENTIAL MONTE CARLO #########################################
+################################################################################################################
 
 # alphaSMC with random connections:
 def alphaSMC_random(data, theta, potential, propagate, test_fn, N, C) :
     
-    y = data['y']
     particles, weights, log_NC, test_fn_est, W, resampled_idx = initialise(data, theta, propagate, N)
-    T = np.shape(y)[0]
+    T = np.shape(data['y'])[0]
     
-    for t in range(T) :
-        weights *= potential(particles, y[t], theta)
+    for t in trange(T) :
+        weights *= potential(particles, data['y'][t], theta)
         for particle in range(N) :
             connections = npr.choice(a=N, size=C, replace=False)
             W[particle] = np.mean(weights[connections])
@@ -73,20 +113,18 @@ def alphaSMC(data, theta, potential, propagate, test_fn, N, C, alpha) :
     if type(alpha) == np.ndarray : 
         assert N == np.shape(alpha)[0]
     
-    y = data['y']
-    
     particles, weights, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
-    T = np.shape(y)[0]
+    T = np.shape(data['y'])[0]
     prob_wts = np.ones((N,N))
     items = np.arange(N)
     weights = weights/N
 
-    for t in range(T) :
+    for t in trange(T) :
         if type(alpha) == np.ndarray :
             alpha_matrix = alpha
         else :
             alpha_matrix = d_regular_graph(N, C, fix_seed=True)
-        prob_wts = alpha_matrix*weights*potential(particles, y[t], theta) 
+        prob_wts = alpha_matrix*weights*potential(particles, data['y'][t], theta) 
         W_bar = np.sum(prob_wts,axis=1)
         prob_matrix = (prob_wts/np.sum(prob_wts, axis=1, keepdims=True)).T
         resampled_particles = vectorized(prob_matrix, items)
@@ -115,10 +153,72 @@ def local_exchange_graph(N, C) :
         d, d_left, d_right = 1, 1, 1
         while d < C : 
             A[i, (i+1+d_right)%N-1] = 1/C
-            d_right += 1; d += 1
+            d_right += 1
+            d += 1
             if d < C :
                 A[i, (i+1-d_left)%N-1] = 1/C
-                d_left += 1; d += 1
+                d_left += 1
+                d += 1
     return A
+
+def connectivity_const(alpha) :
+    return np.sort(np.abs(np.linalg.eig(alpha)[0]))[-2]
+
+
+################################################################################################################
+############################## AUGMENTED ISLAND RESAMPLING PARTICLE FILTER #####################################
+################################################################################################################
+
+def within_island_resample(particles, theta, potential, y, A) :
+    N = np.shape(particles)[0]
+    pots = potential(y, particles, theta)
+    W_out = np.zeros(N)
+    for i in range(N) :
+        weights = A[i]*pots
+        W_out[i] = np.sum(weights)
+        particles[i] = particles[npr.choice(a=N, size=1, p=weights/W_out[i])]
+    return particles, W_out
+
+def augmented_island_resampling(particles, theta, W_out, A) :
+    N = np.shape(particles)[0]
+    S = np.shape(A)[0]
+    idx = np.arange(N).astype(int)
+    V = copy.deepcopy(W_out)
+    for s in range(S) :
+        V_old = copy.deepcopy(V)
+        resampled_idx = copy.deepcopy(idx)
+        for i in range(N) :
+            weights = A[s,i]*V_old
+            V[i] = np.sum(weights)
+            idx[i] = npr.choice(a=resampled_idx, size=1, p=weights/np.sum(weights))
+    return particles[idx]
+
+def AIRPF(data, theta, potential, propagate, test_fn, A, store_paths=False) :
+    N = np.shape(A)[1]
+    T = np.shape(data['y'])[0]
+    particles, _, _, test_fn_est, _, _ = initialise(data, theta, propagate, N)
+    if store_paths : 
+        particles = np.zeros((N,T+1,len(data['x_0'])))
+        particles[:,0] = data['x_0']
+        particles[:,0] = propagate(particles[:,0], theta)
+    for t in trange(T) : 
+        if store_paths :
+            particles[:,t], W_out = within_island_resample(particles[:,t], theta, potential, data['y'][t], A[1])
+            particles[:,t] = augmented_island_resampling(particles[:,t], theta, W_out, A)
+            particles[:,t+1] = propagate(particles[:,t], theta)
+            test_fn_est[t] = np.mean(test_fn(particles[:,t+1]))
+        else :
+            particles, W_out = within_island_resample(particles, theta, potential, data['y'][t], A[1])
+            particles = augmented_island_resampling(particles, theta, W_out, A)
+            particles = propagate(particles, theta)
+            test_fn_est = np.mean(test_fn(particles))
+    return test_fn_est, particles
+
+
+
+
+
+
+
 
 
