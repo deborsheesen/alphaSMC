@@ -108,13 +108,9 @@ def vectorized(prob_matrix, items) :
     k = (s < r).sum(axis=0)
     return items[k]
 
-def alphaSMC(data, theta, potential, propagate, test_fn, N, C, alpha) :
-    
-    if type(alpha) == scipy.sparse.lil.lil_matrix : 
-        assert N == np.shape(alpha)[0]
-    else :
-        A = local_exchange_graph(N, C)
+def alphaSMC(data, theta, potential, propagate, test_fn, alpha, permute_alpha=False) :
 
+    N = np.shape(alpha)[0]
     particles, weights, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
     T = np.shape(data['y'])[0]
     prob_wts = np.ones((N,N))
@@ -122,16 +118,13 @@ def alphaSMC(data, theta, potential, propagate, test_fn, N, C, alpha) :
     weights = weights/N
 
     for t in range(T) :
-        if type(alpha) == scipy.sparse.lil.lil_matrix :
-            alpha_matrix = alpha
-        else :
-            #alpha_matrix = d_regular_graph(N, C, fix_seed=True)
-            alpha_matrix = random_permute_alpha_matrix(A)
-        prob_wts = scipy.sparse.diags(np.asarray(weights).reshape(-1)*potential(particles, data['y'][t], theta))*alpha_matrix
+        if permute_alpha : 
+            alpha = random_permute_alpha_matrix(alpha)
+        prob_wts = alpha*scipy.sparse.diags(np.asarray(weights).reshape(-1)*potential(particles, data['y'][t], theta))
         W_bar = np.sum(prob_wts,axis=1)
         prob_matrix = (prob_wts/np.sum(prob_wts, axis=1)).T
-        resampled_particles = vectorized(prob_matrix, items)
-        particles[:] = particles[resampled_particles]
+        resampled_indices = vectorized(prob_matrix, items)
+        particles[:] = particles[resampled_indices]
         log_NC[t+1] = log_NC[t] + np.log(np.sum(W_bar)) 
         weights = (W_bar/np.sum(W_bar)) 
         particles = propagate(particles, theta)
