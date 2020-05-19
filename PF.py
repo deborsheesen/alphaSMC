@@ -58,7 +58,7 @@ def bootstrap_PF(data, theta, potential, propagate, test_fn, N, store_paths=Fals
         particles = np.zeros((N,T+1,len(data['x_0'])))
         particles[:,0] = data['x_0']
         particles[:,0] = propagate(particles[:,0], theta)
-    for t in trange(T) :
+    for t in range(T) :
         if store_paths :
             weights = potential(data['y'][t], particles[:,t], theta)
         else : 
@@ -87,7 +87,7 @@ def alphaSMC_random(data, theta, potential, propagate, test_fn, N, C) :
     particles, weights, log_NC, test_fn_est, W, resampled_idx = initialise(data, theta, propagate, N)
     T = np.shape(data['y'])[0]
     
-    for t in trange(T) :
+    for t in range(T) :
         weights *= potential(particles, data['y'][t], theta)
         for particle in range(N) :
             connections = npr.choice(a=N, size=C, replace=False)
@@ -110,29 +110,32 @@ def vectorized(prob_matrix, items) :
 
 def alphaSMC(data, theta, potential, propagate, test_fn, N, C, alpha) :
     
-    if type(alpha) == np.ndarray : 
+    if type(alpha) == scipy.sparse.lil.lil_matrix : 
         assert N == np.shape(alpha)[0]
-    
+    else :
+        A = local_exchange_graph(N, C)
+
     particles, weights, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
     T = np.shape(data['y'])[0]
     prob_wts = np.ones((N,N))
     items = np.arange(N)
     weights = weights/N
 
-    for t in trange(T) :
-        if type(alpha) == np.ndarray :
+    for t in range(T) :
+        if type(alpha) == scipy.sparse.lil.lil_matrix :
             alpha_matrix = alpha
         else :
-            alpha_matrix = d_regular_graph(N, C, fix_seed=True)
-        prob_wts = alpha_matrix*weights*potential(particles, data['y'][t], theta) 
+            #alpha_matrix = d_regular_graph(N, C, fix_seed=True)
+            alpha_matrix = random_permute_alpha_matrix(A)
+        prob_wts = scipy.sparse.diags(np.asarray(weights).reshape(-1)*potential(particles, data['y'][t], theta))*alpha_matrix
         W_bar = np.sum(prob_wts,axis=1)
-        prob_matrix = (prob_wts/np.sum(prob_wts, axis=1, keepdims=True)).T
+        prob_matrix = (prob_wts/np.sum(prob_wts, axis=1)).T
         resampled_particles = vectorized(prob_matrix, items)
         particles[:] = particles[resampled_particles]
         log_NC[t+1] = log_NC[t] + np.log(np.sum(W_bar)) 
-        weights = W_bar/np.sum(W_bar)         
+        weights = (W_bar/np.sum(W_bar)) 
         particles = propagate(particles, theta)
-        test_fn_est[t] = np.sum(W_bar*test_fn(particles))/np.sum(W_bar)
+        test_fn_est[t] = np.sum(W_bar.flatten()*test_fn(particles))/np.sum(W_bar)
     
     return log_NC, test_fn_est
 
@@ -142,13 +145,13 @@ def d_regular_graph(N, C, fix_seed=True) :
         G = nx.random_regular_graph(C, N, 12345)
     else :
         G = nx.random_regular_graph(C, N)
-    A = np.asarray(nx.to_scipy_sparse_matrix(G).todense())
+    A = nx.to_scipy_sparse_matrix(G)
     A = A/np.sum(A,1)
-    return A
+    return scipy.sparse.lil_matrix(A)
 
 # Local exchange matrix:
 def local_exchange_graph(N, C) :
-    A = np.diag(np.ones(N))/C
+    A = scipy.sparse.eye(N).tolil()/C
     for i in range(N) :
         d, d_left, d_right = 1, 1, 1
         while d < C : 
@@ -164,6 +167,13 @@ def local_exchange_graph(N, C) :
 def connectivity_const(alpha) :
     return np.sort(np.abs(np.linalg.eig(alpha)[0]))[-2]
 
+def random_permute_alpha_matrix(alpha) :
+    N = np.shape(alpha)[0]
+    Id = scipy.sparse.eye(N).tolil()
+    perm = npr.permutation(N)
+    P = Id[perm,:]
+    return (P*alpha*P.T).tolil()
+
 
 ################################################################################################################
 ############################## AUGMENTED ISLAND RESAMPLING PARTICLE FILTER #####################################
@@ -176,7 +186,7 @@ def within_island_resample(particles, theta, potential, y, A) :
     pots = potential(y, particles, theta)
     weights = A*pots
     W_out = np.sum(weights,1)
-    prob_matrix = ((weights.T)/W_out)
+    prob_matrix = (weights.T)/W_out
     resampled_idxs = vectorized(prob_matrix, items)
     return particles[resampled_idxs], W_out
 
@@ -190,19 +200,19 @@ def augmented_island_resampling(particles, theta, W_out, A) :
         resampled_idx = copy.deepcopy(idx)
         weights = A[s]*V_old
         V = np.sum(weights,1)
-        prob_matrix = ((weights.T)/V)
+        prob_matrix = (weights.T)/V
         idx = vectorized(prob_matrix, resampled_idx)
     return particles[idx]
 
 def AIRPF(data, theta, potential, propagate, test_fn, A, store_paths=False) :
     N = np.shape(A)[1]
     T = np.shape(data['y'])[0]
-    particles, _, _, test_fn_est, _, _ = initialise(data, theta, propagate, N)
+    particles, _, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
     if store_paths : 
         particles = np.zeros((N,T+1,len(data['x_0'])))
         particles[:,0] = data['x_0']
         particles[:,0] = propagate(particles[:,0], theta)
-    for t in trange(T) : 
+    for t in range(T) : 
         if store_paths :
             particles[:,t], W_out = within_island_resample(particles[:,t], theta, potential, data['y'][t], A[1])
             particles[:,t] = augmented_island_resampling(particles[:,t], theta, W_out, A)
@@ -212,10 +222,16 @@ def AIRPF(data, theta, potential, propagate, test_fn, A, store_paths=False) :
             particles, W_out = within_island_resample(particles, theta, potential, data['y'][t], A[1])
             particles = augmented_island_resampling(particles, theta, W_out, A)
             particles = propagate(particles, theta)
-            test_fn_est = np.mean(test_fn(particles))
-    return test_fn_est, particles
+            test_fn_est[t] = np.mean(test_fn(particles))
+        log_NC[t+1] = log_NC[t] + np.log(np.mean(W_out))
+    return log_NC, test_fn_est, particles
 
-
+def A_(S) :
+    N = 2**S
+    A = np.zeros((S,N,N))
+    for s in range(S) :
+        A[s] = np.kron(np.kron(np.eye(2**(S-(s+1))),np.ones((2,2))/2),np.eye(2**s))
+    return A
 
 
 
