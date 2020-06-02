@@ -108,7 +108,7 @@ def vectorized(prob_matrix, items) :
     k = (s < r).sum(axis=0)
     return items[k]
 
-def alphaSMC(data, theta, potential, propagate, test_fn, alpha, permute_alpha=False) :
+def alphaSMC(data, theta, potential, propagate, test_fn, alpha, permute_alpha=False, show_progress=False) :
 
     N = np.shape(alpha)[0]
     particles, weights, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
@@ -117,24 +117,38 @@ def alphaSMC(data, theta, potential, propagate, test_fn, alpha, permute_alpha=Fa
     items = np.arange(N)
     weights = weights/N
 
-    for t in range(T) :
-        if permute_alpha : 
-            alpha = random_permute_alpha_matrix(alpha)
-        prob_wts = alpha*scipy.sparse.diags(np.asarray(weights).reshape(-1)*potential(particles, data['y'][t], theta))
-        W_bar = np.sum(prob_wts,axis=1)
-        prob_matrix = (prob_wts/np.sum(prob_wts, axis=1)).T
-        resampled_indices = vectorized(prob_matrix, items)
-        particles[:] = particles[resampled_indices]
-        log_NC[t+1] = log_NC[t] + np.log(np.sum(W_bar)) 
-        weights = (W_bar/np.sum(W_bar)) 
-        particles = propagate(particles, theta)
-        test_fn_est[t] = np.sum(W_bar.flatten()*test_fn(particles))/np.sum(W_bar)
+    if show_progress : 
+        for t in trange(T) :
+            if permute_alpha : 
+                alpha = random_permute_alpha_matrix(alpha)
+            prob_wts = alpha*scipy.sparse.diags(np.asarray(weights).reshape(-1)*potential(particles, data['y'][t], theta))
+            W_bar = np.sum(prob_wts,axis=1)
+            prob_matrix = (prob_wts/np.sum(prob_wts, axis=1)).T
+            resampled_indices = vectorized(prob_matrix, items)
+            particles[:] = particles[resampled_indices]
+            log_NC[t+1] = log_NC[t] + np.log(np.sum(W_bar)) 
+            weights = (W_bar/np.sum(W_bar)) 
+            particles = propagate(particles, theta)
+            test_fn_est[t] = np.sum(W_bar.flatten()*test_fn(particles))/np.sum(W_bar)
+    else :
+        for t in range(T) :
+            if permute_alpha : 
+                alpha = random_permute_alpha_matrix(alpha)
+            prob_wts = alpha*scipy.sparse.diags(np.asarray(weights).reshape(-1)*potential(particles, data['y'][t], theta))
+            W_bar = np.sum(prob_wts,axis=1)
+            prob_matrix = (prob_wts/np.sum(prob_wts, axis=1)).T
+            resampled_indices = vectorized(prob_matrix, items)
+            particles[:] = particles[resampled_indices]
+            log_NC[t+1] = log_NC[t] + np.log(np.sum(W_bar)) 
+            weights = (W_bar/np.sum(W_bar)) 
+            particles = propagate(particles, theta)
+            test_fn_est[t] = np.sum(W_bar.flatten()*test_fn(particles))/np.sum(W_bar)
     
     return log_NC, test_fn_est
 
 
-def d_regular_graph(N, C, fix_seed=True) :
-    if fix_seed == True :
+def d_regular_graph(N, C, fix_seed=False) :
+    if fix_seed :
         G = nx.random_regular_graph(C, N, 12345)
     else :
         G = nx.random_regular_graph(C, N)
@@ -173,18 +187,17 @@ def random_permute_alpha_matrix(alpha) :
 ################################################################################################################
 
 def within_island_resample(particles, theta, potential, y, A) :
-    N = np.shape(particles)[0]
+    N = np.shape(A)[0]
     items = np.arange(N)
     resampled_idxs = np.ones(N).astype(int)
-    pots = potential(y, particles, theta)
-    weights = A*pots
+    weights = A*scipy.sparse.diags(potential(y, particles, theta))
     W_out = np.sum(weights,1)
     prob_matrix = (weights.T)/W_out
     resampled_idxs = vectorized(prob_matrix, items)
     return particles[resampled_idxs], W_out
 
 def augmented_island_resampling(particles, theta, W_out, A) :
-    N = np.shape(particles)[0]
+    N = np.shape(A[0])[0]
     S = np.shape(A)[0]
     idx = np.arange(N).astype(int)
     V = copy.deepcopy(W_out)
@@ -194,29 +207,43 @@ def augmented_island_resampling(particles, theta, W_out, A) :
         weights = A[s]*V_old
         V = np.sum(weights,1)
         prob_matrix = (weights.T)/V
-        idx = vectorized(prob_matrix, resampled_idx)
+        idx = vectorized(prob_matrix, resampled_idx).flatten()
     return particles[idx]
 
-def AIRPF(data, theta, potential, propagate, test_fn, A, store_paths=False) :
-    N = np.shape(A)[1]
+def AIRPF(data, theta, potential, propagate, test_fn, A, store_paths=False, show_progress=False) :
+    N = np.shape(A[0])[0]
     T = np.shape(data['y'])[0]
     particles, _, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
     if store_paths : 
         particles = np.zeros((N,T+1,len(data['x_0'])))
         particles[:,0] = data['x_0']
         particles[:,0] = propagate(particles[:,0], theta)
-    for t in range(T) : 
-        if store_paths :
-            particles[:,t], W_out = within_island_resample(particles[:,t], theta, potential, data['y'][t], A[1])
-            particles[:,t] = augmented_island_resampling(particles[:,t], theta, W_out, A)
-            particles[:,t+1] = propagate(particles[:,t], theta)
-            test_fn_est[t] = np.mean(test_fn(particles[:,t+1]))
-        else :
-            particles, W_out = within_island_resample(particles, theta, potential, data['y'][t], A[1])
-            particles = augmented_island_resampling(particles, theta, W_out, A)
-            particles = propagate(particles, theta)
-            test_fn_est[t] = np.mean(test_fn(particles))
-        log_NC[t+1] = log_NC[t] + np.log(np.mean(W_out))
+    if show_progress : 
+        for t in trange(T) : 
+            if store_paths :
+                particles[:,t], W_out = within_island_resample(particles[:,t], theta, potential, data['y'][t], A[1])
+                particles[:,t] = augmented_island_resampling(particles[:,t], theta, W_out, A)
+                particles[:,t+1] = propagate(particles[:,t], theta)
+                test_fn_est[t] = np.mean(test_fn(particles[:,t+1]))
+            else :
+                particles, W_out = within_island_resample(particles, theta, potential, data['y'][t], A[1])
+                particles = augmented_island_resampling(particles, theta, W_out, A)
+                particles = propagate(particles, theta)
+                test_fn_est[t] = np.mean(test_fn(particles))
+            log_NC[t+1] = log_NC[t] + np.log(np.mean(W_out))
+    else :
+        for t in range(T) : 
+            if store_paths :
+                particles[:,t], W_out = within_island_resample(particles[:,t], theta, potential, data['y'][t], A[1])
+                particles[:,t] = augmented_island_resampling(particles[:,t], theta, W_out, A)
+                particles[:,t+1] = propagate(particles[:,t], theta)
+                test_fn_est[t] = np.mean(test_fn(particles[:,t+1]))
+            else :
+                particles, W_out = within_island_resample(particles, theta, potential, data['y'][t], A[1])
+                particles = augmented_island_resampling(particles, theta, W_out, A)
+                particles = propagate(particles, theta)
+                test_fn_est[t] = np.mean(test_fn(particles))
+            log_NC[t+1] = log_NC[t] + np.log(np.mean(W_out))
     return log_NC, test_fn_est, particles
 
 def A_(S) :
