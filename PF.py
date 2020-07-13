@@ -50,31 +50,57 @@ def initialise(data, theta, propagate, N) :
 #         test_fn_est[t] = np.mean(test_fn(particles))
 #     return log_NC, test_fn_est
 
-def bootstrap_PF(data, theta, potential, propagate, test_fn, N, store_paths=False) :
+def bootstrap_PF(data, theta, potential, propagate, test_fn, N, store_paths=False, showprogress=False) :
+    
+    npr.seed()
+    scipy.random.seed()
     
     particles, _, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
     T = np.shape(data['y'])[0]
-    if store_paths :
-        particles = np.zeros((N,T+1,len(data['x_0'])))
-        particles[:,0] = data['x_0']
-        particles[:,0] = propagate(particles[:,0], theta)
-    for t in range(T) :
+    if not showprogress :
         if store_paths :
-            weights = potential(data['y'][t], particles[:,t], theta)
-        else : 
-            weights = potential(data['y'][t], particles, theta)
-        log_NC_increment = np.log(np.mean(weights))
-        log_NC[t+1] = log_NC[t] + log_NC_increment
-        resampled_idx = npr.choice(a=N, size=N, replace=True, p=weights/np.sum(weights))
-        if store_paths : 
-            particles[:,t] = particles[resampled_idx,t]
-            particles[:,t+1] = propagate(particles[:,t], theta)
-            test_fn_est[t] = np.mean(test_fn(particles[:,t+1]))
-        else : 
-            particles[:] = particles[resampled_idx]
-            particles[:] = propagate(particles, theta)
-            test_fn_est[t] = np.mean(test_fn(particles))
-    return log_NC, test_fn_est, particles
+            particles = np.zeros((N,T+1,len(data['x_0'])))
+            particles[:,0] = data['x_0']
+            particles[:,0] = propagate(particles[:,0], theta)
+        for t in range(T) :
+            if store_paths :
+                weights = potential(data['y'][t], particles[:,t], theta)
+            else : 
+                weights = potential(data['y'][t], particles, theta)
+            log_NC_increment = np.log(np.mean(weights))
+            log_NC[t+1] = log_NC[t] + log_NC_increment
+            resampled_idx = npr.choice(a=N, size=N, replace=True, p=weights/np.sum(weights))
+            if store_paths : 
+                particles[:,t] = particles[resampled_idx,t]
+                particles[:,t+1] = propagate(particles[:,t], theta)
+                test_fn_est[t] = np.mean(test_fn(particles[:,t+1]))
+            else : 
+                particles[:] = particles[resampled_idx]
+                particles[:] = propagate(particles, theta)
+                test_fn_est[t] = np.mean(test_fn(particles))
+        return log_NC, test_fn_est, particles
+    else :
+        if store_paths :
+            particles = np.zeros((N,T+1,len(data['x_0'])))
+            particles[:,0] = data['x_0']
+            particles[:,0] = propagate(particles[:,0], theta)
+        for t in trange(T) :
+            if store_paths :
+                weights = potential(data['y'][t], particles[:,t], theta)
+            else : 
+                weights = potential(data['y'][t], particles, theta)
+            log_NC_increment = np.log(np.mean(weights))
+            log_NC[t+1] = log_NC[t] + log_NC_increment
+            resampled_idx = npr.choice(a=N, size=N, replace=True, p=weights/np.sum(weights))
+            if store_paths : 
+                particles[:,t] = particles[resampled_idx,t]
+                particles[:,t+1] = propagate(particles[:,t], theta)
+                test_fn_est[t] = np.mean(test_fn(particles[:,t+1]))
+            else : 
+                particles[:] = particles[resampled_idx]
+                particles[:] = propagate(particles, theta)
+                test_fn_est[t] = np.mean(test_fn(particles))
+        return log_NC, test_fn_est, particles
 
 
 ################################################################################################################
@@ -83,6 +109,9 @@ def bootstrap_PF(data, theta, potential, propagate, test_fn, N, store_paths=Fals
 
 # alphaSMC with random connections:
 def alphaSMC_random(data, theta, potential, propagate, test_fn, N, C) :
+    
+    npr.seed()
+    scipy.random.seed()
     
     particles, weights, log_NC, test_fn_est, W, resampled_idx = initialise(data, theta, propagate, N)
     T = np.shape(data['y'])[0]
@@ -103,6 +132,9 @@ def alphaSMC_random(data, theta, potential, propagate, test_fn, N, C) :
 
 
 def vectorized(prob_matrix, items) :
+    npr.seed()
+    scipy.random.seed()
+    
     s = prob_matrix.cumsum(axis=0)
     r = npr.rand(prob_matrix.shape[1])
     k = (s < r).sum(axis=0)
@@ -110,6 +142,9 @@ def vectorized(prob_matrix, items) :
 
 def alphaSMC(data, theta, potential, propagate, test_fn, alpha, permute_alpha=False, show_progress=False) :
 
+    npr.seed()
+    scipy.random.seed()
+    
     N = np.shape(alpha)[0]
     particles, weights, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
     T = np.shape(data['y'])[0]
@@ -175,6 +210,9 @@ def connectivity_const(alpha) :
     return np.sort(np.abs(np.linalg.eig(alpha)[0]))[-2]
 
 def random_permute_alpha_matrix(alpha) :
+    npr.seed()
+    scipy.random.seed()
+    
     N = np.shape(alpha)[0]
     Id = scipy.sparse.eye(N).tolil()
     perm = npr.permutation(N)
@@ -187,6 +225,9 @@ def random_permute_alpha_matrix(alpha) :
 ################################################################################################################
 
 def within_island_resample(particles, theta, potential, y, A) :
+    npr.seed()
+    scipy.random.seed()
+    
     N = np.shape(A)[0]
     items = np.arange(N)
     resampled_idxs = np.ones(N).astype(int)
@@ -197,6 +238,9 @@ def within_island_resample(particles, theta, potential, y, A) :
     return particles[resampled_idxs], W_out
 
 def augmented_island_resampling(particles, theta, W_out, A) :
+    npr.seed()
+    scipy.random.seed()
+    
     N = np.shape(A[0])[0]
     S = np.shape(A)[0]
     idx = np.arange(N).astype(int)
@@ -211,6 +255,9 @@ def augmented_island_resampling(particles, theta, W_out, A) :
     return particles[idx]
 
 def AIRPF(data, theta, potential, propagate, test_fn, A, store_paths=False, show_progress=False) :
+    npr.seed()
+    scipy.random.seed()
+    
     N = np.shape(A[0])[0]
     T = np.shape(data['y'])[0]
     particles, _, log_NC, test_fn_est, _, _ = initialise(data, theta, propagate, N)
